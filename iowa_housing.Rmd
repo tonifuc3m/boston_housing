@@ -10,9 +10,9 @@ First we will load the required packages and custom-made functions.
 Note that I set my own working directory (I am using Windows), and my custom-made functions are inside a sub-folder in a file called "utils.R".
 
 ```{r load_packages, results='hide', message=FALSE}
-setwd("C:/Users/toni3/Documents/Development/R_projects")
+setwd("C:/Users/toni3/Documents/Development/R_projects/Kaggle/kaggle_iowa_housing")
 
-packages_needed<-c("data.table", "zoo", "dplyr", "stringr", "pracma", "skimr", "ggplot2", "tidyr", "tidyverse", "caret","glmnet")
+packages_needed<-c("data.table", "dplyr", "tidyr", "stringr" ,"pracma", "skimr", "ggplot2", "caret", "glmnet", "doParallel", "xgboost")
 
 lapply(packages_needed, require, character.only = TRUE)
 source("SRC/utils.R")
@@ -27,8 +27,8 @@ I am using the dataset from https://www.kaggle.com/c/iowa-house-price-prediction
 We are going to load the train and test data, and to merge both datasets, so that some preprocessing, like ignore some attributes or change the name of a value of another attribute (based only on information from the train dataset), is applied in both data frames.
 
 ```{r load_data, results='hide'}
-train_data = as.data.table(read.csv("RAW/train.csv"))
-test_data = as.data.table(read.csv("RAW/test.csv"))
+train_data = data.table::as.data.table(read.csv("RAW/train.csv"))
+test_data = data.table::as.data.table(read.csv("RAW/test.csv"))
 train_data$Id <- NULL
 test_data$Id <- NULL
 
@@ -62,7 +62,7 @@ close_look <- c("BsmtFinSF1", "BsmtFinSF2", "BsmtFullBath", "BsmtHalfBath", "Enc
                 "LotArea", "LotFrontage", "LowQualFinSF", "MasVnrArea", "MiscVal",
                 "PoolArea", "ScreenPorch", "WoodDeckSF", "X3SsnPorch", "SalePrice")
 close_look_data <- train_data %>% subset(., select=close_look)
-ggplot(gather(close_look_data), aes(value)) + 
+ggplot2::ggplot(gather(close_look_data), aes(value)) + 
     geom_histogram(bins = 30) + 
     facet_wrap(~key, scales = 'free_x')
 ```
@@ -221,7 +221,8 @@ test_data = cbind(all.scaled[1461:2919,],
                   all.dummies[1461:2919,])
 
 # Remove unuseful variables
-rm(all.dummies, all.factors, all.numeric, all.scaled, all.center, train.numeric, close_look_data)
+rm(all.dummies, all.factors, all.numeric, all.scaled, all.center,
+   train.numeric, close_look_data)
 
 ```
 
@@ -257,7 +258,7 @@ test_data = all_data[1461:2919,]
 
 After some preprocessing, we are finally here! It is time to play with our models. 
 
-In the further sub-sections I will present code to train a simple linear regression, a Multilayer Perceptron (bit old-fashioned, but I have always like it), a Random Forest and Gradient Boosting Machine. We will not use hyper-parameter tuning, and the BGM is a simple implementation, not a complicated XGBoost of CATGBoost. I will leave these advance techniques for another notebook. 
+In the further sub-sections I will present code to train a simple linear regression, a Multilayer Perceptron (bit old-fashioned, but I have always like it), a Random Forest and Gradient Boosting Machine. We will not use hyper-parameter tuning, yet, and the BGM is a simple implementation, not a complicated XGBoost of CATGBoost. I will leave these advance techniques for the next steps. 
 
 ### First model: linear regression with a few correlated variables
 
@@ -274,17 +275,18 @@ col = corr_mat[1:(dim(corr_mat)[1] - 1), dim(corr_mat)[1]]
 highly_corr_var = names(col[order(-col)][1:num_var])
 
 # Train model & do cross validation
-train_control <- trainControl(method="cv", 
-                              number=10, 
+train_control <- caret::trainControl(method="cv", 
+                              number=5, 
                               savePredictions = TRUE)
 form_hc = paste0('SalePrice~',
               str_c(highly_corr_var, collapse = '+'))
 tic(gcFirst=FALSE)
-mdl.hc.cv <- train(as.formula(form_hc), 
+mdl.hc.cv <- caret::train(as.formula(form_hc), 
                    data = train_data, 
                    method = "lm", 
                    trControl=train_control)
 toc(echo=TRUE)
+print(mdl.hc.cv)
 print(summary(mdl.hc.cv))
 print(mdl.hc.cv$results$RMSE)
 
@@ -319,6 +321,7 @@ To test more complex models we will use only some of the variables of the datase
 Lasso regression is a linear regression techniques that adds a regularization term. This constraints the search space for the coefficients of the linear regression and many of them are set to zero. 
 It is assumed that those coefficients that go to zero correspond to non-informative variables, and thus we should not use them to build our model. 
 ```{r variable_selection_lasso}
+set.seed(0)
 
 preds = as.matrix(train_data %>% select(-SalePrice))
 y = as.matrix(train_data$SalePrice)
@@ -356,19 +359,21 @@ which(selected_var_names %in% highly_corr_var)
 ```{r mlp_model}
 
 set.seed(0)
-train_control <- trainControl(method="cv",
-                              number=10, 
+train_control <- caret::trainControl(method="cv",
+                              number=5, 
                               savePredictions = TRUE)
 form_lasso = paste0('SalePrice~', str_c(colnames(all_data), collapse = '+'))
 
 tic(gcFirst=FALSE)
-mdl.mlp.cv <- train(as.formula(form_lasso), 
+mdl.mlp.cv <- caret::train(as.formula(form_lasso), 
                     data = train_data, 
                     method = "mlp", 
+                    metric="RMSE",
                     trControl=train_control, 
                     verbose = FALSE)
 toc(echo=TRUE)
-print(summary(mdl.mlp.cv))
+print(mdl.mlp.cv)
+#print(summary(mdl.mlp.cv))
 print(mdl.mlp.cv$results$RMSE)
 
 ```
@@ -397,20 +402,22 @@ rm(aux)
 ### Random Forest
 
 ```{r rf_model}
-
-train_control <- trainControl(method="cv", 
-                              number=10, 
+set.seed(0)
+train_control <- caret::trainControl(method="cv", 
+                              number=5, 
                               savePredictions = TRUE)
 form_lasso = paste0('SalePrice~',
                     str_c(colnames(all_data), collapse = '+'))
 
 tic(gcFirst=FALSE)
-mdl.rf.cv <- train(as.formula(form_lasso),
+mdl.rf.cv <- caret::train(as.formula(form_lasso),
                    data = train_data, 
                    method = "rf", 
+                   metric="RMSE", 
                    trControl=train_control,
                    verbose = FALSE)
 toc(echo=TRUE)
+print(mdl.rf.cv)
 print(summary(mdl.rf.cv))
 print(mdl.rf.cv$results$RMSE)
 
@@ -429,7 +436,7 @@ aux = data.frame(cbind(1461:2919, test_data$predictions_rf))
 colnames(aux) = c('Id', 'SalePrice')
 write.csv(aux, file = "RESULTS/rf_results.csv", 
           quote = FALSE, row.names = FALSE)
-
+rm(aux)
 ```
 
 <br />
@@ -437,19 +444,21 @@ write.csv(aux, file = "RESULTS/rf_results.csv",
 ### Gradient Boosting Machine (not XGBoost implementation!)
 ```{r gbm_model}
 
-train_control <- trainControl(method="cv", 
-                              number=10, 
+train_control <- caret::trainControl(method="cv", 
+                              number=5, 
                               savePredictions = TRUE)
 form_lasso = paste0('SalePrice~',
                     str_c(colnames(all_data), collapse = '+'))
 
 tic(gcFirst=FALSE)
-mdl.gbm.cv <- train(as.formula(form_lasso),
+mdl.gbm.cv <- caret::train(as.formula(form_lasso),
                    data = train_data, 
                    method = "gbm", 
+                   metric="RMSE", 
                    trControl=train_control,
                    verbose=FALSE)
 toc(echo=TRUE)
+print(mdl.gbm.cv)
 print(summary(mdl.gbm.cv))
 print(mdl.gbm.cv$results$RMSE)
 
@@ -467,5 +476,185 @@ aux = data.frame(cbind(1461:2919, test_data$predictions_gbm))
 colnames(aux) = c('Id', 'SalePrice')
 write.csv(aux, file = "RESULTS/gbm_results.csv", 
           quote = FALSE, row.names = FALSE)
+rm(aux)
+
+```
+
+<br />
+
+## Hyper-parameter tuning with Parallel Computing
+
+Inside the caret train function there is a little bit of hyper-parameter tuning, as we can see from the output of print(mdl), but in this section we will do a more exhaustive Search.
+
+In addition, we will force our Windows machine to use several cores, to speed up the computations of Random Forest (RF is easy to parallelize since all the trees are created independently from the others).
+
+Note that the CARET implementation of Random Forest only allows us to tune the parameter mtry.
+
+```{r}
+set.seed(0)
+# process in parallel
+cl <- makeCluster(detectCores(), type="PSOCK")
+registerDoParallel(cl)
+
+
+# prepare training scheme
+train_control <- trainControl(method="cv",
+                        number=5, 
+                        savePredictions = TRUE)
+
+form_lasso = paste0("SalePrice~",
+                    str_c(colnames(all_data), collapse = '+'))
+
+n = ncol(train_data)
+p = nrow(train_data)
+grid <- expand.grid(mtry = seq(floor(n/6),ceil(n/2), 2))
+
+
+tic(gcFirst=FALSE)
+# train the model
+mdl.rf.cv.ht <- train(as.formula(form_lasso),
+               data = train_data, 
+               method="rf", 
+               metric="RMSE",
+               trControl=train_control,
+               tuneGrid = grid,
+               verbose = FALSE)
+# summarize the model
+toc(echo=TRUE)
+print(mdl.rf.cv.ht)
+print(summary(mdl.rf.cv.ht))
+print(mdl.rf.cv.ht$results$RMSE)
+
+# turn parallel processing off and run sequentially again:
+registerDoSEQ()
+
+```
+
+
+
+## XGBoost
+```{r}
+set.seed(0)
+
+# process in parallel
+cl <- makeCluster(detectCores(), type="PSOCK")
+registerDoParallel(cl)
+
+# We transform the data into xgb.DMatrix format, since the algorithm takes only this format
+dtrain <- xgboost::xgb.DMatrix(data = as.matrix(train_data[!(names(train_data) %in% "SalePrice")]),
+                               label = train_data$SalePrice)
+
+# Train
+mdl.xgb <- xgboost::xgboost(dtrain,
+                               max_depth = 3,
+                               eta = 0.1,
+                               nthread = 3,
+                               nrounds = 40, 
+                               lambda = 0,
+                               objective = "reg:linear",
+                            verbose = FALSE)
+
+dtest <- as.matrix(test_data[,1:10])
+test_data$predictions_xgb <- predict(mdl.xgb, dtest)
+
+
+# Tune nrounds
+# The number of rounds was based on iteratively trying out different values for nround. 
+# Let's use the cross validation functionality within xgboost. For convenience, we will move 
+# the parameters into its own list
+
+# Cross-validation, is a model validation technique for assessing how the results of a 
+# statistical analysis will generalize to an independent data set
+
+param <- list("objective" = "reg:linear",
+              "max_depth" = 3, 
+              "eta" = 0.1, 
+              "lambda" = 0)
+
+cv.nround <- 500
+cv.nfold <- 3
+
+mdl.xgb.cv <- xgboost::xgb.cv(param = param,
+                                 data = dtrain,
+                                 nfold = cv.nfold,
+                                 nrounds = cv.nround,
+                                 early_stopping_rounds = 200, # training will stop if performance doesn't improve for 200 rounds from the last best iteration
+                                 verbose = 0) 
+
+#Let's see
+print(mdl.xgb.cv)
+
+# What is the best iteration, with the best evaluation metric value
+print(mdl.xgb.cv$best_iteration)
+
+# Train with nrounds from best iterarion
+mdl.xgb <- xgboost(param = param,
+                      data = dtrain,
+                      nthread = 3, 
+                      nrounds = mdl.xgb.cv$best_iteration,
+                      verbose = 0)
+
+test_data$predictions_xgb <- predict(mdl.xgb, dtest)
+
+'
+# We could further explore the feature importance as we did with random forest
+importance <- xgboost::xgb.importance(colnames(train_data[!names(train_data) %in% c("SalePrice")]), model = mdl.xgb)
+importance
+
+xgboost::xgb.plot.importance(importance, rel_to_first = TRUE, xlab = "Relative Importance")
+'
+
+# One of the final components here is to tune the other parameters in param. 
+# For this we  will have to use the caret package
+
+ntrees <- mdl.xgb.cv$best_iteration
+
+param_grid <- expand.grid(
+  nrounds = ntrees,
+  eta = seq(2, 24, 2)/ntrees,
+  subsample = 1.0,
+  colsample_bytree = 1.0,
+  max_depth = c(1, 2, 3, 4, 5, 6),
+  gamma = 1,
+  min_child_weight = 1
+)
+
+
+xgb_control <- caret::trainControl(
+  method = "cv",
+  number = 5
+)
+
+# Find best combination of parameters, using caret package
+mdl.xgb.tuned <- caret::train(as.formula(form_lasso),
+                                 train_data,
+                                 trControl = xgb_control,
+                                 tuneGrid = param_grid,
+                                 lambda = 0,
+                                 method = "xgbTree")
+
+# The best tuning parameters and the final model is given by
+mdl.xgb.tuned$bestTune
+
+plot(mdl.xgb.tuned)
+print(mdl.xgb.tuned$results$RMSE)
+
+# turn parallel processing off and run sequentially again:
+registerDoSEQ()
+
+```
+
+```{r}
+
+# Make predictions using the test set
+test_data$predictions_xgb <- 
+  unname(predict(mdl.xgb.tuned$finalModel, dtest))
+
+# Write CSV
+aux = data.frame(cbind(1461:2919, test_data$predictions_xgb))
+colnames(aux) = c('Id', 'SalePrice')
+write.csv(aux, file = "RESULTS/xgb_results.csv", 
+          quote = FALSE, row.names = FALSE)
+rm(aux)
 
 ```
