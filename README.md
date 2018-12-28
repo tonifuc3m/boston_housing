@@ -1,5 +1,5 @@
 # kaggle_iowa_housing
-This is a exploration of the Kaggle Iowa House Prices datasets. 
+This is an exploration of the Kaggle Iowa House Prices datasets. 
 
 
 The main code is an R Markdown.
