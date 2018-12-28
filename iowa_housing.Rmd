@@ -1,0 +1,471 @@
+---
+title: "Iowa House Prices dataset"
+output:
+  html_document:
+    df_print: paged
+---
+
+First we will load the required packages and custom-made functions.
+
+Note that I set my own working directory (I am using Windows), and my custom-made functions are inside a sub-folder in a file called "utils.R".
+
+```{r load_packages, results='hide', message=FALSE}
+setwd("C:/Users/toni3/Documents/Development/R_projects")
+
+packages_needed<-c("data.table", "zoo", "dplyr", "stringr", "pracma", "skimr", "ggplot2", "tidyr", "tidyverse", "caret","glmnet")
+
+lapply(packages_needed, require, character.only = TRUE)
+source("SRC/utils.R")
+```
+
+<br /> 
+
+### Load data from Kaggle csv
+
+I am using the dataset from https://www.kaggle.com/c/iowa-house-price-prediction
+
+We are going to load the train and test data, and to merge both datasets, so that some preprocessing, like ignore some attributes or change the name of a value of another attribute (based only on information from the train dataset), is applied in both data frames.
+
+```{r load_data, results='hide'}
+train_data = as.data.table(read.csv("RAW/train.csv"))
+test_data = as.data.table(read.csv("RAW/test.csv"))
+train_data$Id <- NULL
+test_data$Id <- NULL
+
+all_data = data.frame(rbind(train_data %>% select(-SalePrice), 
+                            test_data))
+```
+
+<br /> 
+
+### Quick data exploration
+
+The output of the skimr package is not thought to be output in a Markdown document. Therefore, the output of this chunk is not shown. It serves us to rapidly know the number of missing values per column, a low-quality histogram, the mean, median, etc. With this info we will decide the preprocessing to be applied. 
+
+```{r quick_data_exploration, results='hide'}
+#skimr::skim(train_data)
+```
+
+<br /> 
+
+
+<br /> 
+
+#### Closer look at some variables
+
+Some numeric variables showed a skewed or a discrete histogram. We will take a closer look at them to decide what to do with them.
+
+If the code is run on the console, a warning appears indicating that "Removed 267 rows containing non-finite values". However, we should not worry about it, because the real cause is that some variables have a very long tail, and they are not shown in the histograms. In our problem, since this is a quick description of the variables, we should not worry about this issue. 
+```{r closer_look, warning=FALSE}
+close_look <- c("BsmtFinSF1", "BsmtFinSF2", "BsmtFullBath", "BsmtHalfBath", "EnclosedPorch", 
+                "Fireplaces", "FullBath", "GarageCars", "HalfBath", "KitchenAbvGr", 
+                "LotArea", "LotFrontage", "LowQualFinSF", "MasVnrArea", "MiscVal",
+                "PoolArea", "ScreenPorch", "WoodDeckSF", "X3SsnPorch", "SalePrice")
+close_look_data <- train_data %>% subset(., select=close_look)
+ggplot(gather(close_look_data), aes(value)) + 
+    geom_histogram(bins = 30) + 
+    facet_wrap(~key, scales = 'free_x')
+```
+
+<br />
+
+### Preprocessing
+
+#### Numerical to categorical
+
+In the histograms, we realized that some numeric variables are actually categorical, since they have discrete numeric values. We will cast them to factor. 
+
+```{r num2cat}
+num2cat <- c("BsmtFullBath","BsmtHalfBath", "Fireplaces", "FullBath", "GarageCars", "HalfBath", "KitchenAbvGr")
+
+all_data[names(t) %in% num2cat] <- lapply(all_data[names(t) %in% num2cat], factor)
+```
+
+<br /> 
+
+
+#### Remove those with no variance
+
+Also, some numeric variables present 90% (or even more) of the entries in a specific value. We will remove them since some of the info of this variables is already contained in other categorical variables. For example, PoolArea represents the area of the pool of a house. But since most houses do not have a pool, almost all values contain a zero. And we already have a categorical variable stating whether a house has a pool or not. 
+
+In a more cautious analysis the variables I will remove should be inspected more carefully, but we will skip that step and directly remove them. 
+```{r rm_no_variance}
+## PoolArea not info (and we already have a categorical one)
+rm_no_variance <- c("PoolArea", "X3SsnPorch","BsmtFinSF2", "EnclosedPorch", "LowQualFinSF", "MiscVal", "WoodDeckSF")
+
+all_data[(names(all_data) %in% rm_no_variance)] <- NULL
+
+```
+
+```{r}
+# Re-divide the all_data datatable into train and test
+train_data = cbind(all_data[1:1460,], 
+                   train_data$SalePrice)
+colnames(train_data)[dim(train_data)[2]] = "SalePrice"
+test_data = all_data[1461:2919,]
+
+```
+
+<br />
+
+#### NA treatment
+
+NAs are always an interesting part of the preprocessing. 
+In this notebook I have followed 4 strategies to treat them:
+
+1/ Remove columns with lots of NAs
+
+2/ Replace NAs by their actual meaning: sometimes, a NA appears but it actually means a zero or None. For example, there are tons of instances with NAs in the attribute "PoolQC". And they correspond to the Houses without a pool (I cross-checked this previously with PoolArea variable).
+
+3/ Replace NAs by the mode of that attribute. Sometimes NAs are impossible to treat. In this cases, a common approach is to replace them by the most common value to minimize the damage they produce. Obviously, this most common value is computed in the train set. I do this in the categorical variables.
+
+4/ Replace NAs by the mean of that attribute. When we have numeric attributes, instead of chosing the mode, we should choose the mean of the median (in this notebook I will use the mean because it is less expensive computationally, despite this is not an issue with our small dataset).
+
+```{r nas}
+
+# 1/ Remove Columns with lots of NAs
+att_rm = c('Alley', 'Fence', 'FireplaceQu')
+all_data[(names(all_data) %in% att_rm)] <- NULL
+
+# 2/ Replace NA by their meaning
+na2none_list <- c("PoolQC", "BsmtQual", "BsmtCond", "BsmtExposure", "BsmtFinType1", 
+                  "BsmtFinType2", "GarageType", "GarageFinish", 
+                  "GarageQual", "GarageCond", "MiscFeature")
+
+for (i in (na2none_list)){
+  c = names(all_data)
+  pos <- which(c %in% i)
+  levels(all_data[[pos]]) <- c(levels(all_data[[pos]]), "None")
+  all_data[[pos]][is.na(all_data[[pos]])] <- "None"
+}
+
+factor.names <- names(all_data %>% select(-one_of(na2none_list)))[sapply(all_data %>% select(-one_of(na2none_list)), is.factor)]
+numeric.names <- names(all_data %>% select(-one_of(na2none_list)))[sapply(all_data %>% select(-one_of(na2none_list)), is.numeric)]
+
+# 3/ Assign NA entries to the most common category
+for (i in factor.names){
+  all_data <- na2mode(train_data, all_data, i)
+}
+
+# 4/ Replace NA by mean (all nummerical attribute)
+for (i in numeric.names){
+  all_data <- na2mean(train_data, all_data, i)
+}
+
+```
+
+```{r}
+# Re-divide the all_data datatable into train and test
+train_data = cbind(all_data[1:1460,], 
+                   train_data$SalePrice)
+colnames(train_data)[dim(train_data)[2]] = "SalePrice"
+test_data = all_data[1461:2919,]
+```
+
+<br /> 
+
+#### Get dummies and scale
+
+Once we have our dataset clean, there is one last step before we can proceed to train models. Categorical variables need to be decomposed in to dummy variables and numerical ones need to be scaled.
+
+```{r dummyfy_categorical_variables}
+
+# Get factor variables
+all.factors <- 
+  all_data[, names(all_data)[sapply(all_data, is.factor)]]
+
+
+# Dummies from factors
+all.dummies <- 
+  as.data.frame(model.matrix(~.-1, all.factors))
+
+```
+
+The scaling I have used is to have zero mean and unit standard deviation. Then, I will substract the mean of the variables in the train set and divide by the standard deviation.
+```{r scale_numeric_variables}
+
+# Get numeric columns 
+all.numeric <- 
+  all_data[, names(all_data)[sapply(all_data, is.numeric)]]
+
+train.numeric <- 
+  train_data[, names(train_data)[sapply(train_data, is.numeric)]]
+train.numeric <- 
+  train.numeric[, names(train.numeric) != 'SalePrice']
+
+# Standardize numeric data (use means and standard deviations from train data!)
+x_mean <- colMeans(train.numeric)
+stdev <- apply(train.numeric, 2, sd)
+all.center = sweep(all.numeric, 2, x_mean, "-")
+all.scaled = sweep(all.center, 2, stdev, "/")
+
+```
+
+We can check the scaling is correct: 
+```{r}
+colMeans(all.scaled)
+apply(all.scaled, 2, sd)
+
+```
+
+<br />
+
+```{r}
+# Re-divide the all_data datatable into train and test
+all_data = cbind(all.scaled, all.dummies)
+train_data = cbind(all.scaled[1:1460,], 
+                   all.dummies[1:1460,],
+                   train_data$SalePrice)
+colnames(train_data)[dim(train_data)[2]] = "SalePrice"
+test_data = cbind(all.scaled[1461:2919,], 
+                  all.dummies[1461:2919,])
+
+# Remove unuseful variables
+rm(all.dummies, all.factors, all.numeric, all.scaled, all.center, train.numeric, close_look_data)
+
+```
+
+<br />
+
+#### Remove highly correlated variables
+
+Some columns contain redundant information. This is common when we have a variable with the Year and another with the Age, for example. We will apply a custom-made function to replace any variable highly correlated with others. 
+
+I have set the threshold to 0.9.
+```{r correlation_filter}
+#####
+# Remove variables highly correlated with others
+#####
+all_data = correlation_filter(all_data, 0.9)
+
+```
+
+<br />
+
+```{r}
+# Re-divide the all_data datatable into train and test
+train_data = cbind(all_data[1:1460,], train_data$SalePrice)
+colnames(train_data)[dim(train_data)[2]] = "SalePrice"
+test_data = all_data[1461:2919,]
+
+```
+
+
+<br />
+
+## Model testing
+
+After some preprocessing, we are finally here! It is time to play with our models. 
+
+In the further sub-sections I will present code to train a simple linear regression, a Multilayer Perceptron (bit old-fashioned, but I have always like it), a Random Forest and Gradient Boosting Machine. We will not use hyper-parameter tuning, and the BGM is a simple implementation, not a complicated XGBoost of CATGBoost. I will leave these advance techniques for another notebook. 
+
+### First model: linear regression with a few correlated variables
+
+To use a simple linear regression, I will regress only on a few predictors. They are selected based on their correlation with the output variable (in the train set, obviously).
+
+I acknowledge it makes more sense to correlate with the log of the output variable, but for simplicity I have not done it. 
+```{r first_model}
+set.seed(0)
+
+# Find highly correlated variables with the output
+corr_mat = cor(train_data)
+num_var = 3
+col = corr_mat[1:(dim(corr_mat)[1] - 1), dim(corr_mat)[1]]
+highly_corr_var = names(col[order(-col)][1:num_var])
+
+# Train model & do cross validation
+train_control <- trainControl(method="cv", 
+                              number=10, 
+                              savePredictions = TRUE)
+form_hc = paste0('SalePrice~',
+              str_c(highly_corr_var, collapse = '+'))
+tic(gcFirst=FALSE)
+mdl.hc.cv <- train(as.formula(form_hc), 
+                   data = train_data, 
+                   method = "lm", 
+                   trControl=train_control)
+toc(echo=TRUE)
+print(summary(mdl.hc.cv))
+print(mdl.hc.cv$results$RMSE)
+
+```
+Out Adjusted R2 is 0.7, not bad! 
+And the RMSE skyrockets around 405K. We will try to reduce it using other models!
+
+Finally, predict using the test set and submit those predictions to Kaggle
+```{r}
+# Make predictions using the test set
+test_data$predictions_hc <- 
+  unname(predict(mdl.hc.cv, 
+                 test_data[, highly_corr_var]))
+
+# Write CSV
+aux = data.frame(cbind(1461:2919, test_data$predictions_hc))
+colnames(aux) = c('Id', 'SalePrice')
+write.csv(aux, file = "RESULTS/highly_corr_results.csv", 
+          quote = FALSE, row.names = FALSE)
+
+rm(aux)
+
+
+```
+
+
+<br />
+
+## Variable selection
+
+To test more complex models we will use only some of the variables of the dataset, but they will be chosen in a different way: we will use Lasso regression. 
+Lasso regression is a linear regression techniques that adds a regularization term. This constraints the search space for the coefficients of the linear regression and many of them are set to zero. 
+It is assumed that those coefficients that go to zero correspond to non-informative variables, and thus we should not use them to build our model. 
+```{r variable_selection_lasso}
+
+preds = as.matrix(train_data %>% select(-SalePrice))
+y = as.matrix(train_data$SalePrice)
+cvfit <- glmnet::cv.glmnet(preds, y)
+lasso_coef = coef(cvfit, s = "lambda.1se")
+
+selected_variables = which(lasso_coef != 0)
+selected_var_names = 
+  rownames(lasso_coef)[selected_variables
+                       [2:length(selected_variables)]]
+selected_variables = (selected_variables - 1) #remove intercept
+
+
+all_data = all_data[, (selected_variables)]
+train_data = cbind(all_data[1:1460,],
+                   train_data$SalePrice)
+colnames(train_data)[dim(train_data)[2]] = "SalePrice"
+test_data = cbind(all_data[1461:2919,], 
+                  test_data$predictions_hc)
+colnames(test_data)[dim(test_data)[2]] = "predictions_hc"
+
+# Analyze which variables selected by Lasso are highly 
+# correlated with the output
+print(selected_var_names)
+print(highly_corr_var)
+which(selected_var_names %in% highly_corr_var)
+
+```
+
+<br />
+
+## Further Model testing
+
+### MLP
+```{r mlp_model}
+
+set.seed(0)
+train_control <- trainControl(method="cv",
+                              number=10, 
+                              savePredictions = TRUE)
+form_lasso = paste0('SalePrice~', str_c(colnames(all_data), collapse = '+'))
+
+tic(gcFirst=FALSE)
+mdl.mlp.cv <- train(as.formula(form_lasso), 
+                    data = train_data, 
+                    method = "mlp", 
+                    trControl=train_control, 
+                    verbose = FALSE)
+toc(echo=TRUE)
+print(summary(mdl.mlp.cv))
+print(mdl.mlp.cv$results$RMSE)
+
+```
+From the first lines of the summary we see how simple our MLP is. 
+
+
+Finally, predict using the test set and submit those predictions to Kaggle
+```{r}
+# Make predictions using the test set
+test_data$predictions_mlp <- 
+  unname(predict(mdl.mlp.cv, 
+                 test_data[, selected_var_names]))
+
+# Write CSV
+aux = data.frame(cbind(1461:2919, test_data$predictions_mlp))
+colnames(aux) = c('Id', 'SalePrice')
+write.csv(aux, file = "RESULTS/mlp_results.csv", 
+          quote = FALSE, row.names = FALSE)
+
+rm(aux)
+
+```
+
+<br />
+
+### Random Forest
+
+```{r rf_model}
+
+train_control <- trainControl(method="cv", 
+                              number=10, 
+                              savePredictions = TRUE)
+form_lasso = paste0('SalePrice~',
+                    str_c(colnames(all_data), collapse = '+'))
+
+tic(gcFirst=FALSE)
+mdl.rf.cv <- train(as.formula(form_lasso),
+                   data = train_data, 
+                   method = "rf", 
+                   trControl=train_control,
+                   verbose = FALSE)
+toc(echo=TRUE)
+print(summary(mdl.rf.cv))
+print(mdl.rf.cv$results$RMSE)
+
+```
+
+Finally, predict using the test set and submit those predictions to Kaggle
+```{r}
+
+# Make predictions using the test set
+test_data$predictions_rf <- 
+  unname(predict(mdl.rf.cv, 
+                 test_data[, selected_var_names]))
+
+# Write CSV
+aux = data.frame(cbind(1461:2919, test_data$predictions_rf))
+colnames(aux) = c('Id', 'SalePrice')
+write.csv(aux, file = "RESULTS/rf_results.csv", 
+          quote = FALSE, row.names = FALSE)
+
+```
+
+<br />
+
+### Gradient Boosting Machine (not XGBoost implementation!)
+```{r gbm_model}
+
+train_control <- trainControl(method="cv", 
+                              number=10, 
+                              savePredictions = TRUE)
+form_lasso = paste0('SalePrice~',
+                    str_c(colnames(all_data), collapse = '+'))
+
+tic(gcFirst=FALSE)
+mdl.gbm.cv <- train(as.formula(form_lasso),
+                   data = train_data, 
+                   method = "gbm", 
+                   trControl=train_control,
+                   verbose=FALSE)
+toc(echo=TRUE)
+print(summary(mdl.gbm.cv))
+print(mdl.gbm.cv$results$RMSE)
+
+```
+
+Finally, predict using the test set and submit those predictions to Kaggle
+```{r}
+# Make predictions using the test set
+test_data$predictions_gbm <- 
+  unname(predict(mdl.gbm.cv, 
+                 test_data[, selected_var_names]))
+
+# Write CSV
+aux = data.frame(cbind(1461:2919, test_data$predictions_gbm))
+colnames(aux) = c('Id', 'SalePrice')
+write.csv(aux, file = "RESULTS/gbm_results.csv", 
+          quote = FALSE, row.names = FALSE)
+
+```
