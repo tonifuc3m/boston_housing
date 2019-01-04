@@ -1,7 +1,10 @@
 ---
 title: "Iowa House Prices dataset"
 output:
-  rmarkdown::github_document
+  md_document:
+    variant: markdown_github
+  html_document:
+    default
 ---
 
 First we will load the required packages and custom-made functions.
@@ -43,6 +46,7 @@ The output of the skimr package is not thought to be output in a Markdown docume
 
 ```{r quick_data_exploration, results='hide'}
 #skimr::skim(train_data)
+train_data %>% skim() %>% kable()
 ```
 
 <br /> 
@@ -264,7 +268,7 @@ In the further sub-sections I will present code to train a simple linear regress
 To use a simple linear regression, I will regress only on a few predictors. They are selected based on their correlation with the output variable (in the train set, obviously).
 
 I acknowledge it makes more sense to correlate with the log of the output variable, but for simplicity I have not done it. 
-```{r first_model}
+```{r first_model, warning=FALSE}
 set.seed(0)
 
 # Find highly correlated variables with the output
@@ -489,7 +493,7 @@ In addition, we will force our Windows machine to use several cores, to speed up
 
 Note that the CARET implementation of Random Forest only allows us to tune the parameter mtry.
 
-```{r}
+```{r hyper_tuning}
 set.seed(0)
 # process in parallel
 cl <- makeCluster(detectCores(), type="PSOCK")
@@ -532,7 +536,7 @@ registerDoSEQ()
 
 
 ## XGBoost
-```{r}
+```{r xgboost_tuning}
 set.seed(0)
 
 # process in parallel
