@@ -2,11 +2,13 @@
 
 This is an exploration of the Kaggle Iowa House Prices datasets. 
 
-+ The main code is an R Markdown.
+Notes:
 
-+ R version: 3.5.1
++ The main code is an R Markdown (.rmd). However, to explore the notebook online, use the .md file.
 
-+ Packages needed: c("data.table", "dplyr", "tidyr", "stringr" ,"pracma", "skimr", "ggplot2", "caret", "glmnet", "doParallel", "xgboost")
++ R version: 3.5.1.
+
++ Packages needed: c("data.table", "dplyr", "tidyr", "stringr" ,"pracma", "skimr", "ggplot2", "caret", "glmnet", "doParallel", "xgboost").
 
 Steps: 
 
