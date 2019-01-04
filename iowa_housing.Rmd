@@ -1,8 +1,7 @@
 ---
 title: "Iowa House Prices dataset"
 output:
-  html_document:
-    df_print: paged
+  rmarkdown::github_document
 ---
 
 First we will load the required packages and custom-made functions.
