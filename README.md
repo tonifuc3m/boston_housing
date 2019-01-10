@@ -1,4 +1,4 @@
-# kaggle_iowa_housing
+# kaggle-iowa-housing
 
 This is an exploration of the Kaggle Iowa House Prices datasets. 
 
